@@ -12,9 +12,13 @@ def pct(x: float | None, digits: int = 1) -> str:
 def render(r: dict) -> str:
     d, delta = r["docs"], r["delta"]
     out = [f"# Results on CORD receipts: {r['model']}, `{r['view']}` view", ""]
+    extras = r.get("extras") or {"samples": 3, "stated": True}
+    did = [f"{extras['samples']} re-samples"] if extras["samples"] else []
+    did += ["the stated-confidence question"] if extras["stated"] else []
     out += [f"Receipts: {d['fit']} to fit the scorer, {d['calibrate']} to choose approval cuts, {d['test']} held out for "
-            f"every number below. Extraction took {r['seconds']:.0f} s per receipt on an 8-core CPU, including three "
-            "re-samples and the stated-confidence question.", ""]
+            f"every number below. Extraction took {r['seconds']:.0f} s per receipt on an 8-core CPU, " +
+            ("including " + " and ".join(did) if did else "with no re-samples and no stated-confidence question, so those "
+             "signals are absent from this run") + ".", ""]
 
     out += ["## How good is the extraction before any routing", "",
             f"Field accuracy {pct(r['field_accuracy'])}; receipts with every field right {pct(r['document_accuracy'])}.", "",

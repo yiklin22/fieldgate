@@ -261,6 +261,15 @@ def _seconds(model: str, view: str) -> float:
     return mean(json.loads(p.read_text())["seconds"] for p in files) if files else 0.0
 
 
+def _extras(model: str, view: str) -> dict:
+    """What the extraction run asked for beyond the values: re-samples and the stated-confidence question."""
+    files = sorted((RUNS / "extract" / model / view).glob("*.json"))[:1]
+    if not files:
+        return {"samples": 0, "stated": False}
+    first = json.loads(files[0].read_text())
+    return {"samples": len(first.get("samples") or []), "stated": bool(first.get("stated"))}
+
+
 def analyse(model: str, view: str, alphas=(0.02, 0.05, 0.10), delta: float = 0.05, draws: int = 1000,
             repeats: int = 200, kind: str = "auto") -> dict:
     rows = load_rows(model, view)
@@ -275,8 +284,9 @@ def analyse(model: str, view: str, alphas=(0.02, 0.05, 0.10), delta: float = 0.0
     cal_scores, test_scores = router.score(scorer, cal), router.score(scorer, test)
 
     scored = {name: [r[key] for r in test] for name, key in BASELINES.items()}
+    scored = {name: scores for name, scores in scored.items() if len(set(scores)) > 1}   # a run without re-samples has no such score
     for group, names in GROUPS.items():
-        if group != "model":
+        if group != "model" and any(len({r[n] for r in fit}) > 1 for n in names):    # skip a group this run never collected
             scored[f"combined, {group} signals only"] = router.score(router.fit(fit, kind, names), test)
     scored["combined, model signals only"] = router.score(router.fit(fit, kind, GROUPS["model"]), test)
     other_kind = "boosted" if kind == "logistic" else "logistic"
@@ -314,6 +324,7 @@ def analyse(model: str, view: str, alphas=(0.02, 0.05, 0.10), delta: float = 0.0
         "repeats": repeats,
         "weights": router.weights(scorer if kind == "logistic" else router.fit(fit, "logistic"))[:12],
         "seconds": _seconds(model, view),
+        "extras": _extras(model, view),
     }
 
 
