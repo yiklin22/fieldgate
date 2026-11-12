@@ -98,16 +98,34 @@ class _Tally:
 
 
 def start_cut(reference_scores: Sequence[float], n_calibration: int, alpha: float, delta: float,
-              grid: Sequence[float] = GRID) -> float | None:
-    """Where to begin the walk: the strictest cut expected to approve enough decisions to certify anything.
+              reference_wrong: Sequence[bool] | None = None, grid: Sequence[float] = GRID) -> float | None:
+    """Where to begin the walk.
 
-    `reference_scores` must come from data other than the calibration sample (the scores of the
-    sample the scorer was fitted on, taken out of fold). Starting stricter than this wastes the
-    walk on a cut too small to pass even with zero errors; starting here costs nothing in validity
-    because the choice never sees a calibration label.
+    The walk stops at its first failure, so a start that fails certifies nothing however good the
+    looser cuts are. A good start is a cut the calibration sample is very likely to pass.
+
+    `reference_scores` (and `reference_wrong`, when given) must come from data other than the
+    calibration sample: here, the sample the scorer was fitted on, scored out of fold. Because the
+    choice never sees a calibration label, it costs nothing in validity.
+
+    With reference labels, the start is the cut where the reference sample gives the strongest
+    evidence that the error rate is under `alpha` (the smallest p-value; ties go to the stricter
+    cut). Without them, it is the strictest cut expected to approve enough decisions to pass with
+    no errors, which is fragile: a loose target needs few decisions, so the walk begins on a small
+    sample where one error ends it.
     """
     if not len(reference_scores):
         return None
+    if reference_wrong is not None:
+        tally = _Tally(reference_scores, reference_wrong)
+        scale = n_calibration / len(reference_scores)
+        best, best_p = None, 1.0
+        for cut in grid:
+            n, k = tally.at(cut)
+            p = p_value(round(k * scale), round(n * scale), alpha)
+            if p < best_p:
+                best, best_p = cut, p
+        return best
     need = needed(alpha, delta)
     for cut in grid:
         share = sum(s >= cut for s in reference_scores) / len(reference_scores)

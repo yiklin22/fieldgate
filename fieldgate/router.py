@@ -1,7 +1,8 @@
 """Turn the signals into one score: the probability that a value is right.
 
-A logistic regression by default, because its weights can be read out to a customer and it does
-not need much data. `kind="boosted"` swaps in gradient-boosted trees for comparison.
+Two kinds: a logistic regression, whose weights can be read out to a customer, and gradient-boosted
+trees, which can use interactions between signals. The analysis picks between them on the fit
+receipts alone (out-of-fold AURC) and reports both.
 
 Scores used to pick or judge a threshold must come from a model that never saw those receipts,
 so `cross_fit` scores each receipt with a model fitted on the other folds.

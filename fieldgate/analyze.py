@@ -125,16 +125,17 @@ def certificates(fit_scores, fit_rows, cal_scores, cal_rows, test_scores, test_r
               [i for i, r in enumerate(test_rows) if r["field"] == f]) for f in FIELD_NAMES]
     for alpha in alphas:
         for name, fi, ci, ti in units:
-            ref = [fit_scores[i] for i in fi]
+            ref, rw = [fit_scores[i] for i in fi], [not fit_rows[i]["correct"] for i in fi]
             cs, cw = [cal_scores[i] for i in ci], [not cal_rows[i]["correct"] for i in ci]
-            cert = certify.certify(cs, cw, alpha, delta, start=certify.start_cut(ref, len(cs), alpha, delta))
+            cert = certify.certify(cs, cw, alpha, delta, start=certify.start_cut(ref, len(cs), alpha, delta, rw))
             ts, tw = [test_scores[i] for i in ti], [not test_rows[i]["correct"] for i in ti]
             out.append(_outcome("field", name, alpha, cert, cs, cw, ts, tw))
-        ref, _, _ = by_document(fit_rows, fit_scores)
+        ref, rc, _ = by_document(fit_rows, fit_scores)
         cs, cc, _ = by_document(cal_rows, cal_scores)
         ts, tc, _ = by_document(test_rows, test_scores)
         cw, tw = [not c for c in cc], [not c for c in tc]
-        cert = certify.certify(cs, cw, alpha, delta, start=certify.start_cut(ref, len(cs), alpha, delta))
+        cert = certify.certify(cs, cw, alpha, delta,
+                               start=certify.start_cut(ref, len(cs), alpha, delta, [not c for c in rc]))
         out.append(_outcome("document", "all fields right", alpha, cert, cs, cw, ts, tw))
     return out
 
@@ -185,33 +186,67 @@ def compare_views(model: str, base_view: str, other_view: str) -> dict | None:
     return out
 
 
-def resplit_study(rows: list[dict], alpha: float, delta: float, repeats: int, kind: str) -> dict:
-    """Re-split the receipts many times and count how often each way of picking a cut misses the target on test.
+def _decisions(rows: list[dict], scores: list[float], unit: str) -> tuple[list[float], list[bool]]:
+    """Scores and wrong flags for one kind of decision: a field name, or "document" for the whole receipt."""
+    if unit == "document":
+        s, ok, _ = by_document(rows, scores)
+        return s, [not c for c in ok]
+    keep = [i for i, r in enumerate(rows) if r["field"] == unit]
+    return [scores[i] for i in keep], [not rows[i]["correct"] for i in keep]
 
-    Per document, because that is one independent decision per receipt. The test parts overlap
-    between repeats, so this is a description of stability, not a second proof.
+
+def resplit_study(rows: list[dict], alphas, delta: float, repeats: int, kind: str) -> dict:
+    """Re-split the receipts many times and count how often each way of picking a cut misses the target.
+
+    Every field and the whole receipt get their own cut in every re-split, chosen two ways on the
+    calibration part and checked on the held-out part. The held-out parts overlap between repeats
+    and are small, so a cut whose true error rate is under target can still come out above it by
+    chance. This describes how the two methods behave; the proof is the simulation in the tests.
     """
-    tally = {"certified": {"over": 0, "coverage": [], "risk": [], "none": 0},
-             "naive": {"over": 0, "coverage": [], "risk": [], "none": 0}}
+    units = list(FIELD_NAMES) + ["document"]
+    tally = {str(a): {u: {how: {"over": 0, "coverage": [], "risk": [], "none": 0} for how in ("naive", "certified")}
+                      for u in units} for a in alphas}
     for seed in range(repeats):
         fit, cal, test = split_rows(rows, seed=seed)
         model = router.fit(fit, kind)
-        ref, _, _ = by_document(fit, router.cross_fit(fit, kind=kind, seed=seed))
-        cs, cc, _ = by_document(cal, router.score(model, cal))
-        ts, tc, _ = by_document(test, router.score(model, test))
-        cw = [not c for c in cc]
-        cuts = {"certified": certify.certify(cs, cw, alpha, delta, start=certify.start_cut(ref, len(cs), alpha, delta)).threshold,
-                "naive": certify.naive(cs, cw, alpha)}
-        for how, cut in cuts.items():
-            approved = [not c for s, c in zip(ts, tc) if cut is not None and s >= cut]
-            t = tally[how]
-            t["none"] += cut is None
-            t["coverage"].append(len(approved) / len(ts))
-            risk = sum(approved) / len(approved) if approved else 0.0
-            t["risk"].append(risk)
-            t["over"] += risk > alpha
-    return {how: {"over_target": t["over"] / repeats, "mean_coverage": mean(t["coverage"]), "mean_error": mean(t["risk"]),
-                  "nothing_certified": t["none"] / repeats} for how, t in tally.items()}
+        fit_scores = router.cross_fit(fit, kind=kind, seed=seed)
+        cal_scores, test_scores = router.score(model, cal), router.score(model, test)
+        for u in units:
+            ref, rw = _decisions(fit, fit_scores, u)
+            cs, cw = _decisions(cal, cal_scores, u)
+            ts, tw = _decisions(test, test_scores, u)
+            for a in alphas:
+                cuts = {"certified": certify.certify(cs, cw, a, delta,
+                                                     start=certify.start_cut(ref, len(cs), a, delta, rw)).threshold,
+                        "naive": certify.naive(cs, cw, a)}
+                for how, cut in cuts.items():
+                    approved = [w for s, w in zip(ts, tw) if cut is not None and s >= cut]
+                    t = tally[str(a)][u][how]
+                    t["none"] += cut is None
+                    t["coverage"].append(len(approved) / len(ts))
+                    risk = sum(approved) / len(approved) if approved else 0.0
+                    t["risk"].append(risk)
+                    t["over"] += risk > a
+
+    def summary(parts: list[dict]) -> dict:
+        n = sum(len(t["coverage"]) for t in parts)
+        return {"over_target": sum(t["over"] for t in parts) / n,
+                "mean_coverage": sum(sum(t["coverage"]) for t in parts) / n,
+                "mean_error": sum(sum(t["risk"]) for t in parts) / n,
+                "nothing_certified": sum(t["none"] for t in parts) / n}
+
+    out = {}
+    for a, per_unit in tally.items():
+        out[a] = {"fields": {how: summary([per_unit[f][how] for f in FIELD_NAMES]) for how in ("naive", "certified")},
+                  "by_unit": {u: {how: summary([per_unit[u][how]]) for how in ("naive", "certified")} for u in units}}
+    return out
+
+
+def choose_kind(fit: list[dict]) -> tuple[str, dict]:
+    """Pick the scorer on the fit receipts alone: lowest out-of-fold AURC."""
+    correct = [r["correct"] for r in fit]
+    found = {kind: evaluate.aurc(router.cross_fit(fit, kind=kind), correct) for kind in ("logistic", "boosted")}
+    return min(found, key=found.get), found
 
 
 def _thin(curve: list[tuple[float, float, float]], keep: int = 240) -> list[tuple[float, float]]:
@@ -227,11 +262,14 @@ def _seconds(model: str, view: str) -> float:
 
 
 def analyse(model: str, view: str, alphas=(0.02, 0.05, 0.10), delta: float = 0.05, draws: int = 1000,
-            repeats: int = 200, kind: str = "logistic") -> dict:
+            repeats: int = 200, kind: str = "auto") -> dict:
     rows = load_rows(model, view)
     fit, cal, test = split_rows(rows)
     if not fit or not cal or not test:
         raise SystemExit(f"not enough extracted receipts yet: fit {len(fit)}, calibrate {len(cal)}, test {len(test)} rows")
+    chosen_on_fit = None
+    if kind == "auto":
+        kind, chosen_on_fit = choose_kind(fit)
     scorer = router.fit(fit, kind)
     fit_scores = router.cross_fit(fit, kind=kind)
     cal_scores, test_scores = router.score(scorer, cal), router.score(scorer, test)
@@ -241,8 +279,10 @@ def analyse(model: str, view: str, alphas=(0.02, 0.05, 0.10), delta: float = 0.0
         if group != "model":
             scored[f"combined, {group} signals only"] = router.score(router.fit(fit, kind, names), test)
     scored["combined, model signals only"] = router.score(router.fit(fit, kind, GROUPS["model"]), test)
+    other_kind = "boosted" if kind == "logistic" else "logistic"
+    labels = {"logistic": "logistic regression", "boosted": "boosted trees"}
     scored["combined, all signals"] = test_scores
-    scored["combined, all signals (boosted trees)"] = router.score(router.fit(fit, "boosted"), test)
+    scored[f"combined, all signals ({labels[other_kind]} instead)"] = router.score(router.fit(fit, other_kind), test)
 
     accuracy = {}
     for f in FIELD_NAMES:
@@ -255,7 +295,7 @@ def analyse(model: str, view: str, alphas=(0.02, 0.05, 0.10), delta: float = 0.0
     other = "reading" if view == "rows" else "rows"
 
     return {
-        "model": model, "view": view, "kind": kind, "delta": delta,
+        "model": model, "view": view, "kind": kind, "kind_label": labels[kind], "chosen_on_fit": chosen_on_fit, "delta": delta,
         "docs": {"fit": len({r["doc"] for r in fit}), "calibrate": len({r["doc"] for r in cal}), "test": len({r["doc"] for r in test})},
         "rows": {"fit": len(fit), "calibrate": len(cal), "test": len(test)},
         "accuracy": accuracy,
@@ -270,9 +310,9 @@ def analyse(model: str, view: str, alphas=(0.02, 0.05, 0.10), delta: float = 0.0
         "cost_assumptions": cost.Costs().__dict__,
         "break_even": {str(c): cost.break_even(c) for c in ERROR_COSTS},
         "views": compare_views(model, view, other),
-        "resplit": {str(a): resplit_study(rows, a, delta, repeats, kind) for a in alphas[1:]},
+        "resplit": resplit_study(rows, alphas, delta, repeats, kind),
         "repeats": repeats,
-        "weights": router.weights(scorer)[:12],
+        "weights": router.weights(scorer if kind == "logistic" else router.fit(fit, "logistic"))[:12],
         "seconds": _seconds(model, view),
     }
 
@@ -281,7 +321,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fieldgate.analyze")
     parser.add_argument("--model", default="Qwen3-1.7B")
     parser.add_argument("--view", default="rows")
-    parser.add_argument("--kind", default="logistic", choices=["logistic", "boosted"])
+    parser.add_argument("--kind", default="auto", choices=["auto", "logistic", "boosted"],
+                        help="scorer; auto picks by out-of-fold AURC on the fit receipts")
     parser.add_argument("--repeats", type=int, default=200)
     parser.add_argument("--draws", type=int, default=1000)
     parser.add_argument("--json", default=None, help="write the raw results here")

@@ -313,5 +313,51 @@ class Cost(unittest.TestCase):
         self.assertGreater(cost.total(approve_all, 3.0), review_all["labour"])   # and over the 1% break-even at $3
 
 
+try:
+    from fastapi.testclient import TestClient
+except Exception:                                   # the web extra is optional
+    TestClient = None
+
+
+@unittest.skipIf(TestClient is None, "fastapi and httpx are not installed")
+class ReviewApp(unittest.TestCase):
+    def setUp(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from fieldgate import app
+        self.app = app
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        patch = mock.patch.object(app, "HOME", Path(self.dir.name))
+        patch.start()
+        self.addCleanup(patch.stop)
+        field = {"value": "45.500", "score": 0.6, "approved": False, "audit": False, "why": ["not printed on the page"],
+                 "boxes": [], "gold": "45.000", "correct": False}
+        queue = {"model": "made-up", "alpha": 0.05, "delta": 0.05, "cuts": {"total": 0.9},
+                 "docs": [{"id": "test-0000", "width": 10, "height": 10, "fields": {"total": field}}]}
+        (Path(self.dir.name) / "queue.json").write_text(json.dumps(queue))
+        self.client = TestClient(app.create_app(), base_url=f"http://127.0.0.1:{app.PORT}")
+
+    def test_a_correction_is_saved_and_the_label_never_leaves_the_server(self):
+        shown = self.client.get("/api/doc/test-0000").json()["fields"]["total"]
+        self.assertNotIn("gold", shown)
+        self.assertNotIn("correct", shown)
+        reply = self.client.post("/api/doc/test-0000/total", json={"action": "correct", "value": "45.000"})
+        self.assertEqual(reply.status_code, 200)                    # this returned 422 until the first real run of the app
+        self.assertEqual(reply.json()["saved"]["value"], "45.000")
+        self.assertEqual(self.client.get("/api/queue").json()["docs"][0]["to_review"], 0)
+
+    def test_refuses_bad_input_other_sites_and_other_hosts(self):
+        post = self.client.post
+        self.assertEqual(post("/api/doc/test-0000/total", json={"action": "correct", "value": "abc"}).status_code, 400)
+        self.assertEqual(post("/api/doc/test-0000/total", json={"action": "delete"}).status_code, 400)
+        self.assertEqual(post("/api/doc/test-0000/nope", json={"action": "accept"}).status_code, 404)
+        self.assertEqual(post("/api/doc/test-0000/total", json={"action": "accept"},
+                              headers={"origin": "http://elsewhere.example"}).status_code, 403)
+        elsewhere = TestClient(self.app.create_app(), base_url="http://elsewhere.example")
+        self.assertEqual(elsewhere.get("/api/queue").status_code, 403)
+
+
 if __name__ == "__main__":
     unittest.main()

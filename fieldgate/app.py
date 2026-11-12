@@ -20,6 +20,11 @@ import time
 from pathlib import Path
 
 from . import analyze, audit, certify, data, ocr, router, signals
+
+try:                                    # at module level so FastAPI can resolve the annotation on `decide`
+    from fastapi import Request
+except ImportError:                     # the web extra is optional; `build` works without it
+    Request = None
 from .schema import BY_NAME, FIELD_NAMES, canonical
 
 HOME = Path(".cache/review")
@@ -32,14 +37,17 @@ def build(model: str, view: str, alpha: float, delta: float = 0.05, limit: int |
     fit, cal, test = analyze.split_rows(rows)
     if not fit or not cal or not test:
         raise SystemExit("extraction has not covered the train and test splits yet")
-    scorer = router.fit(fit)
-    fit_scores, cal_scores, test_scores = router.cross_fit(fit), router.score(scorer, cal), router.score(scorer, test)
+    kind, _ = analyze.choose_kind(fit)
+    scorer = router.fit(fit, kind)
+    fit_scores = router.cross_fit(fit, kind=kind)
+    cal_scores, test_scores = router.score(scorer, cal), router.score(scorer, test)
     cuts: dict[str, float | None] = {}
     for name in FIELD_NAMES:
         ref = [s for r, s in zip(fit, fit_scores) if r["field"] == name]
+        rw = [not r["correct"] for r in fit if r["field"] == name]
         cs = [s for r, s in zip(cal, cal_scores) if r["field"] == name]
         cw = [not r["correct"] for r in cal if r["field"] == name]
-        cuts[name] = certify.certify(cs, cw, alpha, delta, start=certify.start_cut(ref, len(cs), alpha, delta)).threshold
+        cuts[name] = certify.certify(cs, cw, alpha, delta, start=certify.start_cut(ref, len(cs), alpha, delta, rw)).threshold
 
     by_doc: dict[str, dict] = {}
     for r, s in zip(test, test_scores):
@@ -129,7 +137,7 @@ def monitor_state(queue: dict, decisions: dict[str, dict]) -> dict:
 
 
 def create_app():
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
     queue_path = HOME / "queue.json"

@@ -52,13 +52,37 @@ class Guarantee(unittest.TestCase):
 
     def test_certified_cut_exceeds_target_at_most_delta_of_the_time(self):
         def choose(scores, wrong, rng):
-            reference, _ = population(self.N, rng)                  # independent of the labelled sample
-            start = certify.start_cut(reference, self.N, self.ALPHA, self.DELTA)
+            reference, ref_wrong = population(self.N, rng)          # independent of the labelled sample
+            start = certify.start_cut(reference, self.N, self.ALPHA, self.DELTA, ref_wrong)
             return certify.certify(scores, wrong, self.ALPHA, self.DELTA, start=start).threshold
 
         rate, coverage = self.run_many(choose)
         self.assertLessEqual(rate, self.DELTA + 0.02)               # 0.02 is three standard errors of the estimate
         self.assertGreater(coverage, 0.15)                          # and it is not vacuous: it approves a real share
+
+    def test_a_looser_target_never_approves_less(self):
+        # The first full run certified a field at 2% and at 5% but not at 10%: with a loose target the
+        # walk began on a few dozen decisions, where one error ended it. The start now comes from where
+        # independent labelled data gives the strongest evidence.
+        rng = random.Random(11)
+        for _ in range(40):
+            scores, wrong = population(400, rng)
+            reference, ref_wrong = population(400, rng)
+            approved = []
+            for alpha in (0.02, 0.05, 0.10, 0.20):
+                start = certify.start_cut(reference, 400, alpha, self.DELTA, ref_wrong)
+                approved.append(certify.certify(scores, wrong, alpha, self.DELTA, start=start).approved)
+            self.assertEqual(approved, sorted(approved))
+
+    def test_a_population_already_under_target_is_approved_whole(self):
+        rng = random.Random(3)
+        scores = [rng.random() for _ in range(400)]
+        wrong = [rng.random() < 0.04 for _ in scores]                # 4% wrong everywhere, score says nothing
+        ref_wrong = [rng.random() < 0.04 for _ in scores]
+        start = certify.start_cut(scores, 400, 0.10, self.DELTA, ref_wrong)
+        cert = certify.certify(scores, wrong, 0.10, self.DELTA, start=start)
+        self.assertIsNotNone(cert.threshold)
+        self.assertGreater(cert.coverage, 0.4)
 
     def test_naive_cut_exceeds_target_far_more_often(self):
         rate, _ = self.run_many(lambda scores, wrong, rng: certify.naive(scores, wrong, self.ALPHA))

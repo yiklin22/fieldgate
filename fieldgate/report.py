@@ -28,8 +28,11 @@ def render(r: dict) -> str:
             "levels. The last column is read off the test set itself, so it is optimistic; the certified numbers are below.", ""]
     out += r["signal_table"]
     out.append("")
+    if r.get("chosen_on_fit"):
+        out += [f"The combined scorer is {r['kind_label']}, picked on the fit receipts alone by out-of-fold AURC (" +
+                ", ".join(f"{k} {v:.4f}" for k, v in r["chosen_on_fit"].items()) + ").", ""]
     if r["weights"]:
-        out += ["Largest standardised weights in the combined scorer: " +
+        out += ["Largest standardised weights in the logistic-regression scorer, the version whose reasoning can be read out: " +
                 ", ".join(f"`{n}` {w:+.2f}" for n, w in r["weights"][:8]) + ".", ""]
 
     out += ["## Certified auto-approval", "",
@@ -52,16 +55,30 @@ def render(r: dict) -> str:
         out.append("")
 
     out += ["## Certified cut against the usual way of picking one", "",
-            f"The receipts were re-split {r['repeats']} times. Each time a whole-receipt cut was chosen on the calibration part "
-            "two ways and checked on the held-out part. \"Missed target\" is the share of re-splits where the held-out "
-            "error rate among approved receipts came out above target.", "",
+            f"The receipts were re-split {r['repeats']} times. Each time, every field got a cut chosen on the calibration "
+            "part two ways and checked on the held-out part. \"Missed target\" is the share of those cuts whose held-out "
+            "error rate among approved values came out above target. The held-out part is small, so a cut whose true "
+            "error rate is under target can still miss by chance; the comparison between the two rows is the point.", "",
             "| target | method | missed target | mean share approved | mean error among approved | nothing approved |",
             "|---|---|---|---|---|---|"]
     for alpha, both in r["resplit"].items():
         for how, label in (("naive", "loosest cut that looked fine on calibration"), ("certified", "certified cut")):
-            s = both[how]
+            s = both["fields"][how]
             out.append(f"| {pct(float(alpha), 0)} | {label} | {pct(s['over_target'], 0)} | {pct(s['mean_coverage'], 0)} | "
                        f"{pct(s['mean_error'])} | {pct(s['nothing_certified'], 0)} |")
+    out.append("")
+    out += ["The same comparison for each decision on its own, as missed target / mean share approved:", "",
+            "| decision | " + " | ".join(f"usual way, {pct(float(a), 0)}" + " | " + f"certified, {pct(float(a), 0)}"
+                                         for a in r["resplit"]) + " |",
+            "|---|" + "---|---|" * len(r["resplit"])]
+    units = list(next(iter(r["resplit"].values()))["by_unit"])
+    for u in units:
+        cells = []
+        for a in r["resplit"]:
+            for how in ("naive", "certified"):
+                s = r["resplit"][a]["by_unit"][u][how]
+                cells.append(f"{pct(s['over_target'], 0)} / {pct(s['mean_coverage'], 0)}")
+        out.append(f"| {'**whole receipt**' if u == 'document' else u} | " + " | ".join(cells) + " |")
     out.append("")
 
     c = r["cost_assumptions"]
