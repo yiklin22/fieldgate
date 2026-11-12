@@ -1,0 +1,22 @@
+[project]
+name = "fieldgate"
+version = "0.1.0"
+description = "Document extraction that knows which fields a person must check: confidence signals, a certified auto-approval cut, and a review queue. Built on docling; runs on a CPU."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["numpy", "scipy", "scikit-learn"]
+
+[project.optional-dependencies]
+pipeline = ["docling", "rapidocr", "onnxruntime", "torch", "transformers", "pyarrow", "pillow"]
+app = ["fastapi", "uvicorn", "pillow", "pyarrow"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["fieldgate"]
+
+[tool.setuptools.package-data]
+fieldgate = ["static/*"]

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fieldgate review</title>
+<style>
+  :root { --bg:#f6f5f1; --panel:#ffffff; --ink:#1c1b19; --muted:#6b6862; --line:#dedbd3; --accent:#1f5f8b;
+          --ok:#2f6b3c; --ok-bg:#e4f1e6; --warn:#8a4b08; --warn-bg:#fbeed9; --bad:#9b2c2c; --bad-bg:#f8e1e1; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#17181a; --panel:#202225; --ink:#ecebe7; --muted:#a09d96; --line:#35383d; --accent:#7db7e0;
+            --ok:#8fd19b; --ok-bg:#1f3324; --warn:#f0bd72; --warn-bg:#3a2c14; --bad:#f19b9b; --bad-bg:#3d1f1f; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:8px 28px; align-items:baseline; }
+  header h1 { font-size:17px; margin:0; }
+  header .stat { color:var(--muted); } header .stat b { color:var(--ink); font-variant-numeric:tabular-nums; }
+  #alarm { padding:2px 10px; border-radius:99px; background:var(--ok-bg); color:var(--ok); }
+  #alarm.on { background:var(--bad-bg); color:var(--bad); font-weight:600; }
+  main { display:grid; grid-template-columns:210px minmax(260px, 1fr) minmax(320px, 440px); gap:16px; padding:16px 20px; align-items:start; }
+  @media (max-width: 900px) { main { grid-template-columns:1fr; } }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+  #docs { max-height:82vh; overflow:auto; }
+  #docs button { display:flex; justify-content:space-between; width:100%; padding:8px 12px; border:0; border-bottom:1px solid var(--line);
+                 background:none; color:inherit; font:inherit; cursor:pointer; text-align:left; }
+  #docs button.sel { background:var(--bg); font-weight:600; }
+  #docs .n { color:var(--warn); font-variant-numeric:tabular-nums; } #docs .n.zero { color:var(--ok); }
+  #view { padding:12px; position:sticky; top:12px; }
+  #stage { position:relative; display:inline-block; max-width:100%; }
+  #stage img { display:block; max-width:100%; max-height:78vh; border-radius:4px; }
+  #stage svg { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  #stage rect { fill:rgba(255,196,0,.22); stroke:#e09a00; stroke-width:3; vector-effect:non-scaling-stroke; }
+  .field { padding:12px 14px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .field:last-child { border-bottom:0; } .field.sel { box-shadow:inset 3px 0 0 var(--accent); }
+  .field .top { display:flex; justify-content:space-between; gap:10px; align-items:baseline; }
+  .field .name { font-weight:600; } .field .value { font-variant-numeric:tabular-nums; font-size:16px; }
+  .chip { font-size:12px; padding:1px 8px; border-radius:99px; white-space:nowrap; }
+  .chip.ok { background:var(--ok-bg); color:var(--ok); } .chip.review { background:var(--warn-bg); color:var(--warn); }
+  .chip.audit { background:var(--bg); color:var(--muted); border:1px solid var(--line); } .chip.done { background:var(--bg); color:var(--muted); }
+  .why { margin:6px 0 0; padding-left:18px; color:var(--muted); font-size:13px; }
+  .act { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+  .act button, .act input { font:inherit; padding:5px 10px; border-radius:6px; border:1px solid var(--line); background:var(--panel); color:inherit; }
+  .act button { cursor:pointer; } .act button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  @media (prefers-color-scheme: dark) { .act button.primary { color:#10202b; } }
+  .act input { width:130px; }
+  .muted { color:var(--muted); } .err { color:var(--bad); font-size:13px; margin-top:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>fieldgate review</h1>
+  <span class="stat">auto-approved <b id="s-approved">–</b></span>
+  <span class="stat">receipts needing no one <b id="s-touchless">–</b></span>
+  <span class="stat">target <b id="s-target">–</b></span>
+  <span id="alarm">audit: –</span>
+</header>
+<main>
+  <nav class="panel" id="docs" aria-label="Receipts"></nav>
+  <section class="panel" id="view"><div id="stage"><img id="img" alt="Receipt"><svg id="overlay" preserveAspectRatio="none"></svg></div></section>
+  <section class="panel" id="fields" aria-label="Fields"></section>
+</main>
+<script src="/static/review.js"></script>
+</body>
+</html>
