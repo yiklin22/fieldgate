@@ -27,6 +27,7 @@ BASELINES = {
     "model's stated confidence": "stated",
     "agreement of 3 re-samples": "agree",
 }
+CHARTED = ("model probability of the value", "model's stated confidence", "agreement of 3 re-samples", "combined, all signals")
 GROUPS = {
     "model": ("is_null", "p_value", "min_token_p", "first_token_p", "p_null", "tokens", "malformed"),
     "agreement": ("agree", "stated", "stated_missing"),
@@ -213,6 +214,13 @@ def resplit_study(rows: list[dict], alpha: float, delta: float, repeats: int, ki
                   "nothing_certified": t["none"] / repeats} for how, t in tally.items()}
 
 
+def _thin(curve: list[tuple[float, float, float]], keep: int = 240) -> list[tuple[float, float]]:
+    """A risk-coverage curve at no more than `keep` points, always including both ends."""
+    step = max(1, len(curve) // keep)
+    picked = curve[::step] + ([curve[-1]] if (len(curve) - 1) % step else [])
+    return [(round(c, 4), round(r, 4)) for c, r, _ in picked]
+
+
 def _seconds(model: str, view: str) -> float:
     files = sorted((RUNS / "extract" / model / view).glob("*.json"))[:200]
     return mean(json.loads(p.read_text())["seconds"] for p in files) if files else 0.0
@@ -254,6 +262,8 @@ def analyse(model: str, view: str, alphas=(0.02, 0.05, 0.10), delta: float = 0.0
         "field_accuracy": mean(r["correct"] for r in test),
         "document_accuracy": mean(doc_ok),
         "signal_table": signal_table(test, scored, alphas[0], draws),
+        "curves": {name: _thin(evaluate.risk_coverage(scores, [r["correct"] for r in test]))
+                   for name, scores in scored.items() if name in CHARTED},
         "signal_alpha": alphas[0],
         "certificates": certs,
         "costs": cost_table(certs, test, test_scores, alphas),
