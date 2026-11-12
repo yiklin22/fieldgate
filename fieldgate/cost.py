@@ -1,7 +1,13 @@
-"""Turn an approval policy into money, so a threshold can be argued about in the customer's units.
+"""Turn an approval policy into money, so a target error rate can be argued about in the customer's units.
 
-Every number in `Costs` is an assumption to replace with the customer's own. The comparison between
-policies is the output, not the absolute figure.
+Approving a field without review saves the seconds a person would spend on it and risks shipping a
+wrong value. So the error-rate target is not a matter of taste: approving pays only while
+
+    error rate among approved  <  cost of checking one field / cost of one wrong value
+
+(`break_even`). A cheap check and an expensive error mean almost nothing should skip review; an
+expensive check and a cheap error mean most things can. Every number in `Costs` is an assumption to
+replace with the customer's own, and the comparison between policies is the output, not the absolute figure.
 """
 from __future__ import annotations
 
@@ -13,22 +19,26 @@ class Costs:
     wage_per_hour: float = 18.0            # loaded cost of the person who reviews
     seconds_to_open: float = 12.0          # open a document and find your place
     seconds_per_field: float = 6.0         # check one field against the image
-    cost_per_error: float = 15.0           # a wrong value that reaches the ledger: rework, credit note, dispute
+
+    @property
+    def per_field(self) -> float:
+        return self.seconds_per_field / 3600 * self.wage_per_hour
+
+    @property
+    def per_open(self) -> float:
+        return self.seconds_to_open / 3600 * self.wage_per_hour
 
 
-def per_document(docs: int, docs_opened: int, fields_reviewed: int, errors_shipped: int, costs: Costs = Costs()) -> dict:
-    """Cost per document of a policy that had people open `docs_opened` documents and check `fields_reviewed`
-    fields, and let `errors_shipped` wrong values through."""
-    labour = (docs_opened * costs.seconds_to_open + fields_reviewed * costs.seconds_per_field) / 3600 * costs.wage_per_hour
-    errors = errors_shipped * costs.cost_per_error
-    return {"labour": labour / docs, "errors": errors / docs, "total": (labour + errors) / docs,
-            "touchless": 1 - docs_opened / docs}
+def break_even(cost_per_error: float, costs: Costs = Costs()) -> float:
+    """The error rate among approved fields below which skipping review saves money."""
+    return min(1.0, costs.per_field / cost_per_error)
 
 
 def policy(rows: list[dict], approve, costs: Costs = Costs(), reviewer_catches: float = 1.0) -> dict:
-    """Cost of routing `rows` (signal rows carrying `correct`) with `approve(row) -> bool`.
+    """What routing `rows` (signal rows carrying `correct`) with `approve(row) -> bool` costs per document.
 
     A reviewed field is corrected with probability `reviewer_catches`; an approved field ships as it is.
+    Returns labour per document and wrong values shipped per document; `total` prices the errors.
     """
     docs: dict[str, list[dict]] = {}
     for r in rows:
@@ -41,7 +51,13 @@ def policy(rows: list[dict], approve, costs: Costs = Costs(), reviewer_catches: 
         reviewed += len(sent)
         shipped += sum(not r["correct"] for r in fields if approve(r))
         shipped += (1 - reviewer_catches) * sum(not r["correct"] for r in sent)
-    out = per_document(len(docs), opened, reviewed, shipped, costs)
-    out["fields_reviewed"] = reviewed / max(1, len(rows))
-    out["errors_shipped_per_100_docs"] = 100 * shipped / max(1, len(docs))
-    return out
+    n = max(1, len(docs))
+    return {"labour": (opened * costs.per_open + reviewed * costs.per_field) / n,
+            "shipped": shipped / n,
+            "touchless": 1 - opened / n,
+            "fields_reviewed": reviewed / max(1, len(rows))}
+
+
+def total(outcome: dict, cost_per_error: float) -> float:
+    """Cost per document of a policy outcome when each wrong value that ships costs `cost_per_error`."""
+    return outcome["labour"] + outcome["shipped"] * cost_per_error

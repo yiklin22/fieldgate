@@ -64,6 +64,38 @@ def render(r: dict) -> str:
                        f"{pct(s['mean_error'])} | {pct(s['nothing_certified'], 0)} |")
     out.append("")
 
+    c = r["cost_assumptions"]
+    prices = list(r["break_even"])
+    out += ["## What the routing is worth", "",
+            f"Per receipt, on the test receipts. Labour assumes a reviewer at ${c['wage_per_hour']:.0f} an hour who takes "
+            f"{c['seconds_to_open']:.0f} s to open a receipt and {c['seconds_per_field']:.0f} s per field and catches every "
+            "error in what they check. The last columns price each wrong value that ships at three levels, because that "
+            "price decides everything: skipping review only pays while the error rate among approved fields is below "
+            "the cost of one check divided by the cost of one error (" +
+            ", ".join(f"{pct(r['break_even'][p], 1)} at ${float(p):.2f}" for p in prices) +
+            "). These are placeholders for a customer's own figures.", "",
+            "| policy | receipts no one opens | fields checked | wrong values shipped per 100 receipts | labour | " +
+            " | ".join(f"total at ${float(p):.2f} an error" for p in prices) + " |",
+            "|---|---|---|---|---|" + "---|" * len(prices)]
+    for row in r["costs"]:
+        out.append(f"| {row['policy']} | {pct(row['touchless'], 0)} | {pct(row['fields_reviewed'], 0)} | "
+                   f"{100 * row['shipped']:.1f} | ${row['labour']:.3f} | " +
+                   " | ".join(f"${row['total'][p]:.3f}" for p in prices) + " |")
+    out.append("")
+
+    if r.get("views"):
+        v = r["views"]
+        names = [k for k in v if k != "receipts"]
+        out += ["## Does rebuilding the rows matter", "",
+                f"The same {v['receipts']} receipts, extracted from two renderings of the same OCR: docling's reading-order "
+                "export (`reading`) and rows rebuilt from the OCR boxes (`rows`).", "",
+                "| view | field accuracy | receipts with every field right | " + " | ".join(v[names[0]]["by_field"]) + " |",
+                "|---|---|---|" + "---|" * len(v[names[0]]["by_field"])]
+        for name in names:
+            out.append(f"| `{name}` | {pct(v[name]['field'])} | {pct(v[name]['document'])} | " +
+                       " | ".join(pct(x, 0) for x in v[name]["by_field"].values()) + " |")
+        out.append("")
+
     out += ["## How many labelled receipts a target needs", "",
             f"Fewest approved, labelled decisions that can certify a target at {pct(1 - delta, 0)} confidence. "
             "This is arithmetic, not a measurement, and it is the first thing to tell a customer who asks for 99.9%.", "",

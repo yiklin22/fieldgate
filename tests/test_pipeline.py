@@ -3,7 +3,9 @@ import math
 import random
 import unittest
 
-from fieldgate import audit, cost, data, evaluate, layout, router, signals
+from unittest import mock
+
+from fieldgate import analyze, audit, cost, data, evaluate, layout, report, router, signals
 from fieldgate.extract import parse_value
 from fieldgate.ocr import Line, Page
 from fieldgate.schema import FIELD_NAMES, canonical, parse_amount, same
@@ -203,6 +205,58 @@ class Scorer(unittest.TestCase):
             router.fit(rows)
 
 
+class Analysis(unittest.TestCase):
+    """The whole experiment on made-up signal rows, so the splits, certificates and report are exercised in CI."""
+
+    def rows(self):
+        rng = random.Random(5)
+        rows = []
+        for split, n in (("train", 240), ("validation", 40), ("test", 40)):
+            for d in range(n):
+                for name in FIELD_NAMES:
+                    good = rng.random() < 0.85
+                    row = dict.fromkeys(signals.SIGNAL_NAMES, 0.0)
+                    row.update(doc=f"{split}-{d:04d}", field=name, correct=good, gold=1.0, value="1",
+                               printed=float(rng.random() < (0.97 if good else 0.15)),
+                               agree=1.0 if good or rng.random() < 0.4 else 0.33,
+                               p_value=min(1.0, max(0.0, rng.gauss(0.95 if good else 0.6, 0.1))))
+                    rows.append(row)
+        return rows
+
+    def test_runs_end_to_end_and_keeps_its_splits_apart(self):
+        rows = self.rows()
+        fit, cal, test = analyze.split_rows(rows)
+        docs = [{r["doc"] for r in part} for part in (fit, cal, test)]
+        self.assertFalse(docs[0] & docs[1] or docs[0] & docs[2] or docs[1] & docs[2])
+        self.assertTrue(all(d.startswith("train") for d in docs[0] | docs[1]))
+        self.assertEqual(len(docs[2]), 80)
+        with mock.patch.object(analyze, "load_rows", return_value=rows):
+            result = analyze.analyse("made-up", "rows", draws=40, repeats=4)
+        self.assertEqual(result["docs"], {"fit": 120, "calibrate": 120, "test": 80})
+        self.assertEqual(len(result["certificates"]), 3 * (len(FIELD_NAMES) + 1))
+        for c in result["certificates"]:
+            self.assertLessEqual(c["test_approved"], c["test_n"])
+            if c["threshold"] is not None:
+                self.assertLessEqual(c["bound"], c["alpha"] + 1e-9)        # a certificate never claims more than it proved
+        strict = [c for c in result["certificates"] if c["alpha"] == 0.02 and c["unit"] == "field"]
+        self.assertTrue(all(c["threshold"] is None for c in strict))       # 120 receipts cannot certify 2%: that needs 149
+        everything, nothing, routed = result["costs"][0], result["costs"][1], result["costs"][-1]
+        self.assertLess(routed["labour"], everything["labour"])
+        self.assertLess(routed["shipped"], nothing["shipped"])
+        self.assertEqual(everything["shipped"], 0.0)
+        text = report.render(result)
+        for heading in ("Which score finds the wrong values", "Certified auto-approval", "What the routing is worth",
+                        "How many labelled receipts a target needs"):
+            self.assertIn(heading, text)
+
+    def test_document_score_is_the_product_and_one_wrong_field_fails_it(self):
+        rows = [{"doc": "a", "correct": True}, {"doc": "a", "correct": False}, {"doc": "b", "correct": True}]
+        scores, ok, names = analyze.by_document(rows, [0.9, 0.5, 0.8])
+        self.assertEqual(names, ["a", "b"])
+        self.assertEqual(ok, [False, True])
+        self.assertAlmostEqual(scores[0], 0.45)
+
+
 class Audit(unittest.TestCase):
     def run_stream(self, error_rate, n, seed):
         rng = random.Random(seed)
@@ -232,21 +286,31 @@ class Cost(unittest.TestCase):
 
     def test_review_everything_ships_no_errors(self):
         out = cost.policy(self.ROWS, lambda r: False)
-        self.assertEqual(out["errors"], 0.0)
+        self.assertEqual(out["shipped"], 0.0)
         self.assertEqual(out["touchless"], 0.0)
         self.assertAlmostEqual(out["labour"], (2 * 12 + 4 * 6) / 3600 * 18 / 2)
 
     def test_approve_everything_ships_every_error(self):
         out = cost.policy(self.ROWS, lambda r: True)
         self.assertEqual(out["labour"], 0.0)
-        self.assertEqual(out["errors"], 15.0 / 2)
+        self.assertEqual(out["shipped"], 0.5)
+        self.assertEqual(cost.total(out, 10.0), 5.0)
         self.assertEqual(out["touchless"], 1.0)
 
     def test_routing_the_wrong_field_is_cheapest(self):
         routed = cost.policy(self.ROWS, lambda r: r["correct"])
-        self.assertLess(routed["total"], cost.policy(self.ROWS, lambda r: False)["total"])
-        self.assertLess(routed["total"], cost.policy(self.ROWS, lambda r: True)["total"])
+        self.assertLess(cost.total(routed, 5.0), cost.total(cost.policy(self.ROWS, lambda r: False), 5.0))
+        self.assertLess(cost.total(routed, 5.0), cost.total(cost.policy(self.ROWS, lambda r: True), 5.0))
         self.assertEqual(routed["touchless"], 0.5)
+
+    def test_break_even_is_check_cost_over_error_cost(self):
+        self.assertAlmostEqual(cost.break_even(3.0), 0.01)           # a 3-cent check against a 3-dollar error
+        self.assertEqual(cost.break_even(0.001), 1.0)
+        approve_all = cost.policy([{"doc": str(i), "field": "total", "correct": i >= 2} for i in range(100)], lambda r: True)
+        review_all = cost.policy([{"doc": str(i), "field": "total", "correct": i >= 2} for i in range(100)],
+                                 lambda r: False, cost.Costs(seconds_to_open=0))
+        self.assertLess(cost.total(approve_all, 1.0), review_all["labour"])      # 2% wrong is under the 3% break-even at $1
+        self.assertGreater(cost.total(approve_all, 3.0), review_all["labour"])   # and over the 1% break-even at $3
 
 
 if __name__ == "__main__":

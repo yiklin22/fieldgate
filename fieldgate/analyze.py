@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from statistics import mean
 
-from . import certify, data, evaluate, ocr, router, signals
+from . import certify, cost, data, evaluate, ocr, router, signals
 from .schema import FIELD_NAMES
 
 RUNS = Path(".cache/runs")
@@ -146,6 +146,44 @@ def _outcome(unit, name, alpha, cert, cs, cw, ts, tw) -> dict:
             "test_approved": len(approved), "test_errors": sum(approved)}
 
 
+ERROR_COSTS = (0.25, 1.0, 5.0)
+
+
+def cost_table(certs: list[dict], test: list[dict], test_scores: list[float], alphas) -> list[dict]:
+    """Labour and shipped errors per receipt on the test receipts: check everything, check nothing, and
+    the per-field cuts certified for each target."""
+    score_of = {(r["doc"], r["field"]): s for r, s in zip(test, test_scores)}
+    policies = [("a person checks every field", lambda r: False), ("nothing is checked", lambda r: True)]
+    for alpha in alphas:
+        cuts = {c["name"]: c["threshold"] for c in certs if c["unit"] == "field" and c["alpha"] == alpha}
+
+        def routed(r: dict, cuts=cuts) -> bool:
+            cut = cuts.get(r["field"])
+            return cut is not None and score_of[(r["doc"], r["field"])] >= cut
+
+        policies.append((f"certified cuts, target {100 * alpha:.0f}%", routed))
+    out = []
+    for label, approve in policies:
+        outcome = cost.policy(test, approve)
+        out.append({"policy": label, **outcome, "total": {str(c): cost.total(outcome, c) for c in ERROR_COSTS}})
+    return out
+
+
+def compare_views(model: str, base_view: str, other_view: str) -> dict | None:
+    """Accuracy of two text views on the receipts both were run on."""
+    a, b = load_rows(model, base_view), load_rows(model, other_view)
+    shared = {r["doc"] for r in a} & {r["doc"] for r in b}
+    if len(shared) < 20:
+        return None
+    out = {"receipts": len(shared)}
+    for view, rows in ((base_view, a), (other_view, b)):
+        rows = [r for r in rows if r["doc"] in shared]
+        _, ok, _ = by_document(rows, [1.0] * len(rows))
+        out[view] = {"field": mean(r["correct"] for r in rows), "document": mean(ok),
+                     "by_field": {f: mean(r["correct"] for r in rows if r["field"] == f) for f in FIELD_NAMES}}
+    return out
+
+
 def resplit_study(rows: list[dict], alpha: float, delta: float, repeats: int, kind: str) -> dict:
     """Re-split the receipts many times and count how often each way of picking a cut misses the target on test.
 
@@ -175,6 +213,11 @@ def resplit_study(rows: list[dict], alpha: float, delta: float, repeats: int, ki
                   "nothing_certified": t["none"] / repeats} for how, t in tally.items()}
 
 
+def _seconds(model: str, view: str) -> float:
+    files = sorted((RUNS / "extract" / model / view).glob("*.json"))[:200]
+    return mean(json.loads(p.read_text())["seconds"] for p in files) if files else 0.0
+
+
 def analyse(model: str, view: str, alphas=(0.02, 0.05, 0.10), delta: float = 0.05, draws: int = 1000,
             repeats: int = 200, kind: str = "logistic") -> dict:
     rows = load_rows(model, view)
@@ -200,6 +243,8 @@ def analyse(model: str, view: str, alphas=(0.02, 0.05, 0.10), delta: float = 0.0
         accuracy[f] = {"n": len(sub), "accuracy": mean(r["correct"] for r in sub) if sub else None,
                        "present": len(present), "accuracy_present": mean(r["correct"] for r in present) if present else None}
     _, doc_ok, _ = by_document(test, test_scores)
+    certs = certificates(fit_scores, fit, cal_scores, cal, test_scores, test, alphas, delta)
+    other = "reading" if view == "rows" else "rows"
 
     return {
         "model": model, "view": view, "kind": kind, "delta": delta,
@@ -210,11 +255,15 @@ def analyse(model: str, view: str, alphas=(0.02, 0.05, 0.10), delta: float = 0.0
         "document_accuracy": mean(doc_ok),
         "signal_table": signal_table(test, scored, alphas[0], draws),
         "signal_alpha": alphas[0],
-        "certificates": certificates(fit_scores, fit, cal_scores, cal, test_scores, test, alphas, delta),
+        "certificates": certs,
+        "costs": cost_table(certs, test, test_scores, alphas),
+        "cost_assumptions": cost.Costs().__dict__,
+        "break_even": {str(c): cost.break_even(c) for c in ERROR_COSTS},
+        "views": compare_views(model, view, other),
         "resplit": {str(a): resplit_study(rows, a, delta, repeats, kind) for a in alphas[1:]},
         "repeats": repeats,
         "weights": router.weights(scorer)[:12],
-        "seconds": mean(json.loads(p.read_text())["seconds"] for p in list((RUNS / "extract" / model / view).glob("*.json"))[:200]),
+        "seconds": _seconds(model, view),
     }
 
 
